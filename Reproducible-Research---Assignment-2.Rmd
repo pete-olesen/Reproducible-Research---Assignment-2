@@ -1,0 +1,216 @@
+---
+title: "Reproducible Research - Assignment 2"
+author: "Pete Olesen"
+date: '2022-05-20'
+output:
+  html_document: default
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## US Storm Events - Largest health impact and financial impact
+##                 1950 to 2011
+
+## Synopsis
+
+Questions
+Your data analysis must address the following questions:
+
+    
+*Across the United States, which types of events (as indicated in the EVTYPE variable) are most harmful with respect to population health?*
+
+I was rather surprised by this, but tornadoes are by far the most significant. Based on this analysis, the total injuries and fatalities related to tornadoes is over 90,000 for the time frame of the study, 1950 to 2011. The next nearest neighbor was excessive heat at over 8,000.
+
+Please also refer to the plot in the Results section.
+
+    
+*Across the United States, which types of events have the greatest economic consequences?*
+
+
+Interestingly, Floods are by far the largest with over 150 billion in property and crop damage.  Hurricanes came in second at 72 billion in total damage.  Tornadoes came in third at 57 billion.  I would have thought Hurricanes would have been the largest, but flooding affects a much larger geographicial area.  
+
+
+## Data Processing
+
+```{r}
+# import libraries
+
+library(tidyverse)
+library(ggplot2)
+library(dplyr)
+library(readr)
+library(scales)
+library(lubridate)
+library(gtsummary)
+# library(janitor)
+
+
+```
+```{r}
+getwd()
+
+
+
+```
+
+```{r}
+# Load Csv and convert date to a date field
+
+storm_data_df <- read.csv("./repdata_data_StormData.csv.bz2") %>% 
+        mutate(BGN_DATE_NEW = mdy_hms(BGN_DATE), YEAR = year(BGN_DATE_NEW)) 
+
+head(storm_data_df)
+# class(storm_data_df$BGN_DATE_NEW)
+```
+
+Let's take a look at the loaded data frame. I noticed that the EVTYPE - Event type is a character field. I have read the documentation, (10-1605_StormDataPrep.pdf) and the field names in the data are not specifically defined. I also read the FAQ (NCDC Storm Events FAQ.pdf) and the assignment instructions. I don't have a high degree of confidence in the data structure and what is contained in each field.
+
+In any case, let's see how many unique EVTYPE events there are.
+
+```{r}
+# Let's take a look at our data. I think the EVTYPE field has a far # # amount of cleaning to do.
+# How many unique values in EVTYPE
+
+Unique_EVtypes <-unique(storm_data_df$EVTYPE)
+length(Unique_EVtypes)
+
+```
+Ouch! there are 985 unique event types.  I looked through the list and it looks like a lot of cleaning needs to be done here. For example, there appears to be a lot of potentially redundant descriptions, ie "Blizzard" and "Blizzard Weather".  This is but one example.
+
+For the purposes of this assignment, I am not going to attempt to clean this field. I would like to clean this data, but I fear that my reclassification of EVTYPE would be arbitrary and not truly represent the events as they occurred.
+
+That being said, I will do the analysis with the EVTYPES as originally presented.  
+
+## Health impact by Event Type (EVTYPE)
+First to quantify the health impact. I am adding together the fatalities and injuries as the measure for impact on the health of the population.
+
+```{r}
+health_impact_df <- storm_data_df %>%
+      select (YEAR, EVTYPE, FATALITIES, INJURIES) %>%
+      group_by(EVTYPE) %>% 
+      summarise(total_health_impact = sum(INJURIES)+sum(FATALITIES))                  %>% 
+                arrange(desc(total_health_impact), .by_group = TRUE)
+
+head(health_impact_df,10)
+``` 
+
+This, at first blush, doesn't feel right to me. Tornado's are 10X more health impact than the other events. While tornado's can be very destructive, they are also relatively rare.  Need to look at the source data...
+
+```{r}
+
+tornado_df <-   filter(storm_data_df, EVTYPE == "TORNADO") %>%  
+                select(BGN_DATE_NEW,EVTYPE, STATE, COUNTYNAME,INJURIES, FATALITIES)  %>%
+                mutate(tot_health_impact = (INJURIES)+ (FATALITIES))                 %>% 
+                arrange(desc(tot_health_impact))
+
+head(tornado_df, 10)
+   
+```
+As it turns out, this may well be reasonable data.  As you can see from the tornado_df, the largest health impact was from the Witchita, TX tornado in April 1979. I did a Google search, and in fact there were 42 fatalities from this event.  
+
+Here is the Wikipedia link: [Witchita County, TX tornado](https://en.wikipedia.org/wiki/1979_Red_River_Valley_tornado_outbreak#Aftermath
+
+So my previous assumption was not correct. For this assignment, I am going to rely on the data as it stands.
+
+## Financial impact by Event Type (EVTYPE)
+
+Looking at the data, there are two types of damage quantified. First is the amount of property damage PROPDMG and crop damage CROPDMG. The second is the rate of property damage or crop damage (ie K = thousands, M = millions, B = Billions). Each of these is stored in a separate field.
+
+
+```{r setup , message=FALSE,warning=FALSE}
+
+# test section. Group by and summarise first.
+
+financial_impact_df2 <- filter(storm_data_df,PROPDMG >0 |CROPDMG > 0) %>%
+                        select (YEAR, EVTYPE, PROPDMG, PROPDMGEXP, CROPDMG, CROPDMGEXP) %>% 
+                        mutate(EVTYPE_TRIM = trimws(EVTYPE, which = c("left")))  %>%
+                        filter(!EVTYPE_TRIM == "?") %>%
+                        filter(!PROPDMGEXP == "" | !CROPDMGEXP =="") %>%
+                        group_by(EVTYPE_TRIM,YEAR,PROPDMGEXP,CROPDMGEXP)  %>%
+                        summarise(sum_propdmg = sum(PROPDMG),
+                                  sum_cropdmg = sum(CROPDMG)) %>% 
+
+
+          mutate(
+                PROPDMGEXP = coalesce(PROPDMGEXP,'K'),
+                CROPDMGEXP = coalesce(CROPDMGEXP,'K'),
+                PROPDMG_RATE =   gsub('K',1000,
+                                 gsub('M',1000000,
+                                 gsub('B',1000000000,PROPDMGEXP))),
+                CROPDMG_RATE =   gsub('K',1000,
+                                 gsub('M',1000000,
+                                 gsub('B',1000000000,CROPDMGEXP))),
+                PROPDMG_RATE = as.numeric(PROPDMG_RATE),
+                CROPDMG_RATE = as.numeric(CROPDMG_RATE),
+                PROPDMG_RATE = coalesce(PROPDMG_RATE,0),
+                CROPDMG_RATE = coalesce(CROPDMG_RATE,0),
+                TOT_PROP_DMG_USD = PROPDMG_RATE*sum_propdmg,
+                TOT_CROP_DMG_USD = CROPDMG_RATE*sum_cropdmg,
+                TOT_DMG_USD = TOT_PROP_DMG_USD + TOT_CROP_DMG_USD
+          )  
+
+financial_impact_total_df <- financial_impact_df2 %>% 
+                group_by(EVTYPE_TRIM) %>% 
+                summarize(total_damage_B = (sum(TOT_DMG_USD)/1000000000)) %>%
+                arrange(desc(total_damage_B))
+
+# glimpse(financial_impact_df2)
+
+
+
+
+
+```
+
+## Results
+
+
+```{r}
+        health_impact_top10_df <- health_impact_df %>% 
+                slice(1:10) 
+        
+ ggplot(data = health_impact_top10_df)+
+         aes(x = reorder(EVTYPE,total_health_impact), y=total_health_impact , fill="blue") +
+         geom_bar(stat = "identity", fill="steelblue", width = .7)+
+  geom_text(aes(label = total_health_impact), vjust = .2, nudge_y = -.5)+
+         scale_y_continuous(labels = scales::number_format(accuracy = 1))+
+        theme(axis.text.x=element_text(angle=65,hjust=0.5,vjust=0.5))+
+        theme(axis.title.y = element_blank())+
+        theme(axis.title.x = element_blank())+ 
+  labs(title = "Total Health Impact by Year (Injuries and Fatalities)",
+              subtitle = "Top 10 Most Impactful Events: 1950 to 2011",
+              caption = "Source NOAA Storm Data")
+ 
+ # here comes the difference
+# p + scale_y_continuous(
+#   labels = scales::number_format(accuracy = 0.01))
+
+```
+
+Clearly, Tornadoes cause the most fatalities and injuries. The next most impactful event was excessive heat. I have included the top 10 event types here.
+
+```{r}
+        financial_impact_top10_df <- financial_impact_total_df %>% 
+                slice(1:10)
+        
+ ggplot(data = financial_impact_top10_df)+
+         aes(x = reorder(EVTYPE_TRIM,total_damage_B), y=total_damage_B , fill="red") +
+         scale_y_continuous(labels = comma_format(big.mark = ",")) +
+         geom_bar(stat = "identity", fill="red", width = .7)+
+  geom_text(aes(label = total_damage_B), vjust = .5, nudge_y = -.8)+
+         scale_y_continuous(labels = scales::number_format(accuracy = 0.1))+
+        theme(axis.text.x=element_text(angle=65,hjust=0.5,vjust=0.5))+
+        theme(axis.title.y = element_blank())+
+        theme(axis.title.x = element_blank())+
+  labs(title = "Total Financial Impact by Event Type - Billion USD",
+              subtitle = "Top 10 Most Impactful Events: 1950 to 2011",
+              caption = "Source NOAA Storm Data")
+
+```
+
+
+
+
